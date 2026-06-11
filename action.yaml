@@ -1,0 +1,23 @@
+name: release-typescript-action
+description: Release TypeScript-based GitHub Actions
+inputs:
+  major-version:
+    description: Major version
+    required: true
+    default: '1'
+  increment-level:
+    description: Either minor or patch
+    required: true
+    default: minor
+  dry-run:
+    description: Whether to perform a dry run (no actual release)
+    required: true
+    default: ${{ github.event_name == 'pull_request' }}
+  token:
+    description: GitHub token
+    required: true
+    default: ${{ github.token }}
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+  pre: chainguard-phonehome.js
