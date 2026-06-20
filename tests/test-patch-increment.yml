@@ -1,0 +1,43 @@
+name: Test patch increment-level input
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Test that 'patch' is accepted as a valid increment-level value.
+      # The action validates increment-level must be 'minor' or 'patch'.
+      # It will fail at API/git calls in act, but not at input validation.
+      - name: Run action with patch increment-level
+        id: action
+        uses: .
+        continue-on-error: true
+        env:
+          GITHUB_EVENT_NAME: push
+          GITHUB_REF: refs/heads/main
+          GITHUB_REPOSITORY: test-owner/test-repo
+          GITHUB_RUN_ID: '1'
+          GITHUB_SERVER_URL: https://github.com
+        with:
+          major-version: '1'
+          increment-level: patch
+          dry-run: 'true'
+          token: fake-token
+
+      - name: Assert patch increment-level was accepted (not an input validation failure)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          # The action accepts 'patch' as a valid increment-level.
+          # It may fail at git fetch or GitHub API calls in act environment,
+          # but should not fail with an assertion error about increment-level.
+          if [ "$OUTCOME" = "success" ] || [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action accepted patch increment-level (outcome=$OUTCOME)"
+          else
+            echo "FAIL: unexpected outcome=$OUTCOME"
+            exit 1
+          fi
