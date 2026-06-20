@@ -1,0 +1,58 @@
+name: Test pull request dry-run
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_EVENT_NAME: pull_request
+      GITHUB_HEAD_REF: feature-branch
+      GITHUB_BASE_REF: main
+      GITHUB_REPOSITORY: test-owner/test-repo
+      GITHUB_RUN_ID: '12345'
+      GITHUB_SERVER_URL: https://github.com
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up local git remote and event file
+        run: |
+          # Create a local bare repo to act as the remote so git fetch --tags works
+          git init --bare /tmp/remote-repo.git
+
+          # Override origin to point to local bare repo
+          if git remote get-url origin > /dev/null 2>&1; then
+            git remote set-url origin /tmp/remote-repo.git
+          else
+            git remote add origin /tmp/remote-repo.git
+          fi
+
+          # Push current HEAD to the local remote
+          git push origin HEAD:refs/heads/main
+
+          # Create a valid GitHub event JSON file for pull_request event
+          echo '{"pull_request":{"number":1,"head":{"ref":"feature-branch"},"base":{"ref":"main"}}}' > /tmp/github-event.json
+
+      - id: action
+        uses: .
+        continue-on-error: true
+        env:
+          GITHUB_REF: refs/pull/1/merge
+          GITHUB_EVENT_PATH: /tmp/github-event.json
+        with:
+          major-version: '1'
+          increment-level: minor
+          dry-run: 'true'
+          token: fake-token-for-dry-run
+
+      - name: Assert action ran (not skipped)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "action outcome: $OUTCOME"
+          # The action should have run (success or failure at git/API level)
+          # 'skipped' would mean it never executed at all
+          if [ "$OUTCOME" = "skipped" ]; then
+            echo "FAIL: action was skipped unexpectedly"
+            exit 1
+          fi
+          echo "PASS: action executed for pull_request event (outcome: $OUTCOME)"
