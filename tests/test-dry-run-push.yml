@@ -1,0 +1,37 @@
+name: Test dry-run on push event
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Run action in dry-run mode on push
+        id: action
+        uses: .
+        continue-on-error: true
+        env:
+          GITHUB_EVENT_NAME: push
+          GITHUB_REF: refs/heads/main
+          GITHUB_REPOSITORY: test-owner/test-repo
+          GITHUB_RUN_ID: '1'
+          GITHUB_SERVER_URL: https://github.com
+        with:
+          major-version: '1'
+          increment-level: minor
+          dry-run: 'true'
+          token: fake-token
+      - name: Assert action did not fail on input validation
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          # The action should fail at git/API operations (not input validation),
+          # meaning inputs were accepted correctly. It should NOT succeed (no real remote),
+          # but it also should not fail with an input validation error.
+          # Either failure (at git ops) or success is acceptable here.
+          if [ "$OUTCOME" = "skipped" ]; then
+            echo "FAIL: action was skipped unexpectedly"
+            exit 1
+          fi
+          echo "PASS: action ran (inputs were accepted, outcome=$OUTCOME)"

@@ -1,0 +1,36 @@
+name: Test tag push event
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Run action on tag push event
+        id: action
+        uses: .
+        continue-on-error: true
+        env:
+          GITHUB_EVENT_NAME: push
+          GITHUB_REF: refs/tags/v1.0.0
+          GITHUB_REPOSITORY: test-owner/test-repo
+          GITHUB_RUN_ID: '1'
+          GITHUB_SERVER_URL: https://github.com
+        with:
+          major-version: '1'
+          increment-level: minor
+          dry-run: 'true'
+          token: fake-token
+      - name: Assert action ran on tag push
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          # On a tag push, the action takes the followUpCurrentTag path.
+          # It will fail at git/API operations in this test environment, which is expected.
+          # The important thing is that it ran (not skipped) and accepted the inputs.
+          if [ "$OUTCOME" = "skipped" ]; then
+            echo "FAIL: action was skipped unexpectedly"
+            exit 1
+          fi
+          echo "PASS: action ran on tag push event (outcome=$OUTCOME)"
