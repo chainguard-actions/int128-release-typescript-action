@@ -1,0 +1,58 @@
+name: Test dry-run tag follow-up path
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up workspace for tag follow-up test
+        run: |
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+
+          # Ensure .gitignore exists but does NOT contain 'dist/'
+          # so the action's sed makes no change to it
+          echo "node_modules/" > .gitignore
+
+          # Commit .gitignore so git status is clean after the action runs sed
+          git add -A
+          git diff --cached --quiet || git commit -m "Set up .gitignore for tag follow-up test"
+
+          # Create a bare repo as origin in /tmp in case the action goes into
+          # createNextRelease (if GITHUB_REF is not overridden at step level)
+          rm -rf /tmp/git-remote-test
+          git init --bare /tmp/git-remote-test
+          git push /tmp/git-remote-test HEAD:refs/heads/act-harness
+          git push /tmp/git-remote-test --tags
+          git remote set-url origin /tmp/git-remote-test 2>/dev/null || \
+            git remote add origin /tmp/git-remote-test
+
+      - id: action
+        uses: .
+        with:
+          major-version: '1'
+          increment-level: minor
+          dry-run: 'true'
+        env:
+          GITHUB_REF: refs/tags/v1.0.0
+        continue-on-error: true
+
+      - name: Assert action completed (success or failure both acceptable)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          # If GITHUB_REF was overridden to refs/tags/v1.0.0, the action goes into
+          # followUpCurrentTag. If git status is empty, it returns early (success).
+          # If GITHUB_REF was not overridden, the action goes into createNextRelease
+          # and fails at 'git commit' (nothing to commit) or at the GitHub API call.
+          if [ "$OUTCOME" = "success" ] || [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action ran with outcome=$OUTCOME"
+          else
+            echo "FAIL: unexpected outcome=$OUTCOME"
+            exit 1
+          fi

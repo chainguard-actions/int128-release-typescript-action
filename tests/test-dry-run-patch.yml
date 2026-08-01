@@ -1,0 +1,54 @@
+name: Test dry-run patch increment
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up git identity and local origin for git fetch
+        run: |
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+
+          # Ensure .gitignore exists (action runs sed on it)
+          if [ ! -f .gitignore ]; then
+            echo "node_modules/" > .gitignore
+            git add .gitignore
+            git commit -m "Add .gitignore for test"
+          fi
+
+          # Create a bare repo as origin in /tmp so 'git fetch --tags' works.
+          # Using /tmp avoids the bare repo being staged by 'git add .' in the action.
+          rm -rf /tmp/git-remote-test
+          git init --bare /tmp/git-remote-test
+          git push /tmp/git-remote-test HEAD:refs/heads/act-harness
+          git push /tmp/git-remote-test --tags
+          git remote set-url origin /tmp/git-remote-test 2>/dev/null || \
+            git remote add origin /tmp/git-remote-test
+
+      - id: action
+        uses: .
+        with:
+          major-version: '1'
+          increment-level: patch
+          dry-run: 'true'
+        continue-on-error: true
+
+      - name: Assert action failed (expected in test environment)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          # The action fails because either:
+          # - 'git commit' fails (nothing to commit), or
+          # - 'signCurrentCommit' fails (new commit SHA does not exist on GitHub)
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed as expected in test environment"
+          else
+            echo "FAIL: unexpected outcome=$OUTCOME (expected failure)"
+            exit 1
+          fi
