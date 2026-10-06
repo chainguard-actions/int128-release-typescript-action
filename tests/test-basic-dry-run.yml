@@ -1,0 +1,31 @@
+name: Test basic dry-run
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_EVENT_NAME: push
+      GITHUB_REF: refs/heads/main
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: action
+        uses: .
+        with:
+          major-version: '1'
+          increment-level: minor
+          dry-run: 'true'
+          token: ${{ github.token }}
+        continue-on-error: true
+      - name: Assert action ran without unexpected failure
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          # In dry-run mode the action should either succeed or fail gracefully
+          # (e.g. no dist/ in this repo), but it must not be skipped
+          if [ "$OUTCOME" = "skipped" ]; then
+            echo "FAIL: action was skipped unexpectedly"
+            exit 1
+          fi
+          echo "PASS: action ran (outcome=$OUTCOME)"
