@@ -1,0 +1,87 @@
+name: Test first release (no existing tags)
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Back up workspace state and point origin at a local bare repo
+        run: |
+          set -e
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+          echo "ORIG_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "ORIG_BRANCH=$(git symbolic-ref -q --short HEAD || true)" >> "$GITHUB_ENV"
+          echo "ORIG_ORIGIN=$(git remote get-url origin 2>/dev/null || true)" >> "$GITHUB_ENV"
+          git for-each-ref refs/tags --format='%(objectname) %(refname)' > /tmp/rta-orig-tags.txt
+          rm -rf /tmp/rta-backup && mkdir -p /tmp/rta-backup
+          if [ -d .github/workflows ]; then cp -a .github/workflows /tmp/rta-backup/workflows; fi
+          if [ -f .gitignore ]; then cp .gitignore /tmp/rta-backup/gitignore; else touch .gitignore; touch /tmp/rta-backup/gitignore-created; fi
+          echo "release test marker" > rta-test-marker.txt
+          # start from a clean tag state
+          git tag -l | xargs -r git tag -d
+          rm -rf /tmp/rta-remote.git
+          git init --bare /tmp/rta-remote.git
+          git -C /tmp/rta-remote.git config receive.shallowUpdate true
+          git push /tmp/rta-remote.git HEAD:refs/heads/main
+          git remote set-url origin /tmp/rta-remote.git 2>/dev/null || git remote add origin /tmp/rta-remote.git
+
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          dry-run: 'true'
+
+      - name: Assert release commit for v1.0.0 was prepared
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          SUBJECT="$(git log -1 --format=%s HEAD)"
+          BODY="$(git log -1 --format=%B HEAD)"
+          echo "HEAD subject: $SUBJECT"
+          echo "$BODY"
+          if [ "$SUBJECT" != "Release v1.0.0" ]; then
+            echo "FAIL: expected HEAD commit subject 'Release v1.0.0'"
+            exit 1
+          fi
+          if ! echo "$BODY" | grep -q "Auto-Generated-By: release-typescript-action"; then
+            echo "FAIL: expected Auto-Generated-By trailer"
+            exit 1
+          fi
+          if [ "$OUTCOME" = "success" ]; then
+            if ! git rev-parse --verify -q refs/tags/v1.0.0 >/dev/null; then
+              echo "FAIL: action succeeded but tag v1.0.0 was not created"
+              exit 1
+            fi
+            echo "PASS: release v1.0.0 prepared"
+          elif [ "$OUTCOME" = "failure" ]; then
+            # signing the commit needs the GitHub API on the (sentinel) repo
+            LEFT="$(git ls-remote /tmp/rta-remote.git 'refs/heads/signing--*')"
+            echo "remaining signing branches: $LEFT"
+            if [ -n "$LEFT" ]; then
+              echo "FAIL: signing branch was not cleaned up on the remote"
+              exit 1
+            fi
+            echo "PASS: release commit prepared, failed gracefully at API signing step"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi
+
+      - name: Restore workspace state
+        if: always()
+        run: |
+          git checkout -f "${ORIG_BRANCH:-$ORIG_SHA}" 2>/dev/null || git checkout -f "$ORIG_SHA"
+          git reset --hard "$ORIG_SHA"
+          git tag -l | xargs -r git tag -d
+          while read -r sha ref; do [ -n "$ref" ] && git update-ref "$ref" "$sha"; done < /tmp/rta-orig-tags.txt
+          if [ -n "$ORIG_ORIGIN" ]; then git remote set-url origin "$ORIG_ORIGIN"; else git remote remove origin 2>/dev/null || true; fi
+          rm -f rta-test-marker.txt
+          if [ -f /tmp/rta-backup/gitignore-created ]; then rm -f .gitignore; elif [ -f /tmp/rta-backup/gitignore ]; then cp /tmp/rta-backup/gitignore .gitignore; fi
+          if [ -d /tmp/rta-backup/workflows ]; then mkdir -p .github && rm -rf .github/workflows && cp -a /tmp/rta-backup/workflows .github/workflows; fi
+          true

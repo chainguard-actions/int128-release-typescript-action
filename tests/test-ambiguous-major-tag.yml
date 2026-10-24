@@ -1,0 +1,72 @@
+name: Test major tag pointing to multiple version tags fails
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Back up workspace state and point origin at a local bare repo with ambiguous tags
+        run: |
+          set -e
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+          echo "ORIG_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "ORIG_BRANCH=$(git symbolic-ref -q --short HEAD || true)" >> "$GITHUB_ENV"
+          echo "ORIG_ORIGIN=$(git remote get-url origin 2>/dev/null || true)" >> "$GITHUB_ENV"
+          git for-each-ref refs/tags --format='%(objectname) %(refname)' > /tmp/rta-orig-tags.txt
+          rm -rf /tmp/rta-backup && mkdir -p /tmp/rta-backup
+          if [ -d .github/workflows ]; then cp -a .github/workflows /tmp/rta-backup/workflows; fi
+          if [ -f .gitignore ]; then cp .gitignore /tmp/rta-backup/gitignore; else touch .gitignore; touch /tmp/rta-backup/gitignore-created; fi
+          git tag -l | xargs -r git tag -d
+          git tag v1.0.0
+          git tag v1.0.1
+          git tag v1
+          rm -rf /tmp/rta-remote.git
+          git init --bare /tmp/rta-remote.git
+          git -C /tmp/rta-remote.git config receive.shallowUpdate true
+          git push /tmp/rta-remote.git HEAD:refs/heads/main
+          git push /tmp/rta-remote.git --tags
+          git remote set-url origin /tmp/rta-remote.git 2>/dev/null || git remote add origin /tmp/rta-remote.git
+
+      - id: action
+        uses: .
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          major-version: '1'
+          increment-level: patch
+          dry-run: 'true'
+
+      - name: Assert action failed before creating a release commit
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "FAIL: expected failure when v1 points to multiple version tags"
+            exit 1
+          fi
+          NOW="$(git rev-parse HEAD)"
+          echo "HEAD before: $ORIG_SHA, after: $NOW"
+          if [ "$NOW" != "$ORIG_SHA" ]; then
+            echo "FAIL: action created a commit despite ambiguous major tag"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Restore workspace state
+        if: always()
+        run: |
+          git checkout -f "${ORIG_BRANCH:-$ORIG_SHA}" 2>/dev/null || git checkout -f "$ORIG_SHA"
+          git reset --hard "$ORIG_SHA"
+          git tag -l | xargs -r git tag -d
+          while read -r sha ref; do [ -n "$ref" ] && git update-ref "$ref" "$sha"; done < /tmp/rta-orig-tags.txt
+          if [ -n "$ORIG_ORIGIN" ]; then git remote set-url origin "$ORIG_ORIGIN"; else git remote remove origin 2>/dev/null || true; fi
+          if [ -f /tmp/rta-backup/gitignore-created ]; then rm -f .gitignore; elif [ -f /tmp/rta-backup/gitignore ]; then cp /tmp/rta-backup/gitignore .gitignore; fi
+          if [ -d /tmp/rta-backup/workflows ]; then mkdir -p .github && rm -rf .github/workflows && cp -a /tmp/rta-backup/workflows .github/workflows; fi
+          true
