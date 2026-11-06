@@ -1,0 +1,75 @@
+name: Test first release (no existing tags)
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Set up local origin and clean tag state
+        id: setup
+        run: |
+          set -e
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "origin=$(git remote get-url origin 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+          # Remove all local tags so the action sees no prior release
+          git tag -l | xargs -r git tag -d
+          # The action runs sed on .gitignore; ensure it exists
+          if [ ! -f .gitignore ]; then printf 'dist/\n' > .gitignore; echo "created=true" >> "$GITHUB_OUTPUT"; fi
+          # Simulate a freshly built artifact so the release commit is non-empty
+          echo "built $(date +%s)" > release-test-artifact.txt
+          rm -rf "$GITHUB_WORKSPACE/.git-remote"
+          git init --bare "$GITHUB_WORKSPACE/.git-remote"
+          git push "$GITHUB_WORKSPACE/.git-remote" HEAD:refs/heads/act-harness
+          git remote set-url origin "$GITHUB_WORKSPACE/.git-remote" 2>/dev/null || \
+            git remote add origin "$GITHUB_WORKSPACE/.git-remote"
+          echo "/.git-remote" >> .git/info/exclude
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          major-version: '1'
+          increment-level: minor
+          dry-run: 'true'
+      - name: Assert release commit for v1.0.0 was prepared
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          MSG="$(git log -1 --format=%s)"
+          echo "last commit subject: $MSG"
+          if [ "$OUTCOME" != "success" ] && [ "$OUTCOME" != "failure" ]; then
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi
+          if [ "$MSG" != "Release v1.0.0" ]; then
+            echo "FAIL: expected release commit 'Release v1.0.0'"
+            exit 1
+          fi
+          if ! git show --name-only --format= HEAD | grep -qx 'release-test-artifact.txt'; then
+            echo "FAIL: release commit does not include the built artifact"
+            exit 1
+          fi
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: computed v1.0.0; signing failed gracefully (sentinel repo is not resolvable)"
+          else
+            echo "PASS: release v1.0.0 prepared"
+          fi
+      - name: Restore repository state
+        if: always()
+        env:
+          ORIG_SHA: ${{ steps.setup.outputs.sha }}
+          ORIG_ORIGIN: ${{ steps.setup.outputs.origin }}
+          CREATED: ${{ steps.setup.outputs.created }}
+        run: |
+          git checkout -f act-harness 2>/dev/null || true
+          git reset --hard "$ORIG_SHA" || true
+          git tag -l | xargs -r git tag -d || true
+          rm -f release-test-artifact.txt
+          if [ "$CREATED" = "true" ]; then rm -f .gitignore; fi
+          if [ -n "$ORIG_ORIGIN" ]; then git remote set-url origin "$ORIG_ORIGIN" || true; fi
+          rm -rf "$GITHUB_WORKSPACE/.git-remote"
