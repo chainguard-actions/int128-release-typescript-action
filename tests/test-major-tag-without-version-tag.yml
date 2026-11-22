@@ -1,0 +1,57 @@
+name: Test major tag that points to no version tag
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/heads/main
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Set up local origin with only a bare major tag
+        id: setup
+        run: |
+          set -e
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+          git tag -l | xargs -r git tag -d
+          git tag v97
+          rm -rf /tmp/origin-nover.git
+          git init --bare /tmp/origin-nover.git
+          git -C /tmp/origin-nover.git config receive.shallowUpdate true
+          git push /tmp/origin-nover.git HEAD:refs/heads/act-harness
+          git push /tmp/origin-nover.git --tags
+          git remote set-url origin /tmp/origin-nover.git 2>/dev/null || \
+            git remote add origin /tmp/origin-nover.git
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          major-version: "97"
+          increment-level: minor
+          dry-run: "true"
+      - name: Assert action failed and made no release commit
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+          BEFORE: ${{ steps.setup.outputs.sha }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "FAIL: expected failure when v97 points to no version tag, got '$OUTCOME'"
+            exit 1
+          fi
+          AFTER="$(git rev-parse HEAD)"
+          echo "before: $BEFORE after: $AFTER"
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "FAIL: a commit was created"
+            exit 1
+          fi
+          if git rev-parse --verify -q refs/tags/v97.1.0 >/dev/null; then
+            echo "FAIL: next tag was created"
+            exit 1
+          fi
+          echo "PASS"

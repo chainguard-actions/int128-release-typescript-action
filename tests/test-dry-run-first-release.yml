@@ -1,0 +1,85 @@
+name: Test dry-run first release prepares release commit
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/heads/main
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Set up local origin with no tags for major 97
+        id: setup
+        run: |
+          set -e
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+          git tag -l | xargs -r git tag -d
+          [ -f .gitignore ] || echo "node_modules" > .gitignore
+          echo "marker" > release-marker.txt
+          rm -rf /tmp/origin-first.git
+          git init --bare /tmp/origin-first.git
+          git -C /tmp/origin-first.git config receive.shallowUpdate true
+          git push /tmp/origin-first.git HEAD:refs/heads/act-harness
+          git remote set-url origin /tmp/origin-first.git 2>/dev/null || \
+            git remote add origin /tmp/origin-first.git
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          major-version: "97"
+          increment-level: minor
+          dry-run: "true"
+      - name: Assert release commit prepared (signing API may fail on sentinel repo)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+          BEFORE: ${{ steps.setup.outputs.sha }}
+        run: |
+          echo "outcome: $OUTCOME"
+          git log --oneline -3 || true
+          if [ "$OUTCOME" = "success" ]; then
+            if ! git rev-parse --verify -q refs/tags/v97.0.0 >/dev/null; then
+              echo "FAIL: action succeeded but tag v97.0.0 was not created"
+              exit 1
+            fi
+            echo "PASS: dry-run release v97.0.0 prepared"
+            exit 0
+          elif [ "$OUTCOME" != "failure" ]; then
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi
+          # Failure is expected at the commit-signing API call (sentinel repo).
+          SUBJECT="$(git log -1 --format=%s HEAD)"
+          echo "HEAD subject: $SUBJECT"
+          if [ "$SUBJECT" != "Release v97.0.0" ]; then
+            echo "FAIL: expected local release commit 'Release v97.0.0'"
+            exit 1
+          fi
+          PARENT="$(git rev-parse HEAD^)"
+          if [ "$PARENT" != "$BEFORE" ]; then
+            echo "FAIL: release commit parent $PARENT != original HEAD $BEFORE"
+            exit 1
+          fi
+          if ! git log -1 --format=%B HEAD | grep -q "Auto-Generated-By: release-typescript-action"; then
+            echo "FAIL: missing Auto-Generated-By trailer"
+            exit 1
+          fi
+          if ! git show --name-only --format= HEAD | grep -qx "release-marker.txt"; then
+            echo "FAIL: release commit does not include working-tree changes"
+            exit 1
+          fi
+          LEFTOVER="$(git -C /tmp/origin-first.git for-each-ref --format='%(refname)' 'refs/heads/signing--*')"
+          echo "leftover signing branches: '$LEFTOVER'"
+          if [ -n "$LEFTOVER" ]; then
+            echo "FAIL: signing branch was not cleaned up on origin"
+            exit 1
+          fi
+          if git -C /tmp/origin-first.git rev-parse --verify -q refs/tags/v97.0.0 >/dev/null; then
+            echo "FAIL: tag was pushed to origin despite failure/dry-run"
+            exit 1
+          fi
+          echo "PASS: release commit prepared and signing branch cleaned up"
